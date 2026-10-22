@@ -1,5 +1,5 @@
 
-# NODE-07 — Caching & Conditional Requests with Redis
+# NODE JS — Caching & Conditional Requests with Redis
 
 A Node.js backend practice project demonstrating Redis caching,
 ETag validation, conditional HTTP requests, cache invalidation,
