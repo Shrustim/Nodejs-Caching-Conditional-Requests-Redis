@@ -1,329 +1,510 @@
-# NODE-10 — Rate Limiting & Throttling with Redis
 
-**Node.js + Express.js + Redis | Practice Project**
+# NODE-07 — Caching & Conditional Requests with Redis
 
-This project implements an **exact sliding-window API rate limiter** using Redis sorted sets and an atomic Lua script. It demonstrates IP-based, authenticated-user-based, and validated-API-token-based limits, `429 Too Many Requests` responses, `Retry-After` headers, and shared limits across multiple Express instances.
+A Node.js backend practice project demonstrating Redis caching,
+ETag validation, conditional HTTP requests, cache invalidation,
+Cache-Control policies, and automated testing.
 
-This README is based on the attached NODE-10 practice document and focuses on the commands required to **set up, run, and test** that project.
+## 1. Project Overview
 
-## 1. Requirements
+This project demonstrates how to optimize REST APIs using
+Redis and HTTP caching mechanisms.
 
-Install and have available:
+The main goal is to reduce unnecessary data-source operations,
+avoid retransmitting unchanged responses, and handle cached
+data correctly.
 
-- **Node.js and npm**
-- **Docker Desktop**, running (to start the Redis container)
-- A terminal; the examples below use **Windows PowerShell** for HTTP tests and multi-instance setup.
+### Features
 
-## 2. Create the project
+- Redis cache-aside (read-through) caching
+- Cache HIT, MISS, and BYPASS handling
+- Cache keys and TTL
+- ETag generation using SHA-256
+- If-None-Match request validation
+- HTTP 304 Not Modified responses
+- Cache-Control response headers
+- Cache invalidation after product updates
+- HTTP stale-while-revalidate policy
+- Redis error handling and fallback
+- Cache performance metrics
+- Unit and integration testing
 
-Run in your terminal:
+## 2. Technology Stack
 
-```powershell
-mkdir node-rate-limiting
-cd node-rate-limiting
-npm init -y
-```
+- Node.js 22+
+- Express.js 5
+- Redis 7+
+- redis (Node.js Redis client)
+- Node.js crypto
+- Node.js built-in test runner
+- Supertest
+- Docker Desktop
+- Postman
 
-Install runtime dependencies:
+## 3. Project Structure
 
-```powershell
-npm install express redis dotenv express-rate-limit
-```
+    node-07-caching-practice/
+    │
+    ├── src/
+    │   ├── app.js
+    │   ├── server.js
+    │   ├── config/ 
+             ├──  redis.js
+    │        ├── store.js
+    │        └── cache.js
+    │
+    ├── tests/
+    │   ├── cache.unit.test.js
+    │   └── cache.integration.test.js
+    │
+    ├── package.json
+    ├── package-lock.json
+    └── .gitignore
 
-Install development and testing dependencies:
+## 4. Installation and Setup
 
-```powershell
-npm install --save-dev jest supertest nodemon
-```
+### Step 1: Check Node.js Version
 
-**Note:** `express-rate-limit` is included to compare the standard library with the custom Redis Lua implementation. The main practice routes use the **custom** limiter; do not apply both limiters to the same route.
+    node -v
+    npm -v
 
-## 3. Configure npm commands
+### Step 2: Create a New Project
 
-Add or update the `scripts` property in `package.json`:
+Skip this step if the project already exists.
 
-```json
-{
-  "scripts": {
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js",
-    "test": "jest --runInBand",
-    "test:coverage": "jest --coverage --runInBand"
-  }
-}
-```
+    mkdir node-07-caching-practice
+    cd node-07-caching-practice
+    npm init -y
 
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Start the API with Nodemon (automatic restart on file changes). |
-| `npm start` | Start the API with Node.js. |
-| `npm test` | Run Jest / Supertest tests sequentially. |
-| `npm run test:coverage` | Run the tests and generate the coverage report. |
+### Step 3: Install Dependencies
 
-## 4. Configure environment variables
+    npm install express@5 redis@5
 
-Create `.env` in the project root:
+Install development dependencies:
 
-```dotenv
-PORT=3000
-REDIS_URL=redis://localhost:6379
-TRUST_PROXY=false
-```
+    npm install --save-dev supertest@7
 
-Create `.env.example` with safe example values. Add these entries to `.gitignore`:
+If you are cloning an existing repository that contains
+package-lock.json, use:
 
-```gitignore
-node_modules/
-.env
-coverage/
-```
+    npm ci
 
-The automated tests in the attached document use `redis://localhost:6379/15` by default, keeping test data separate from the development database (`/0`). You may set `TEST_REDIS_URL` if you need a different **nonproduction** test Redis database.
+### Step 4: Configure NPM Scripts
 
-## 5. Run Redis using Docker
+Add these scripts to package.json:
 
-First, **start Docker Desktop**. For the first run, create the Redis container:
+    "scripts": {
+      "start": "node src/server.js",
+      "dev": "node --watch src/server.js",
+      "test": "node --test",
+      "test:unit": "node --test tests/cache.unit.test.js",
+      "test:integration": "node --test tests/cache.integration.test.js"
+    }
 
-```powershell
-docker run -d --name rate-limit-redis -p 6379:6379 redis:7-alpine
-```
+## 5. Redis Setup
 
-Check that Redis is responding:
+### Create Redis Docker Container
 
-```powershell
-docker exec rate-limit-redis redis-cli ping
-```
+    docker run -d --name node07-redis -p 127.0.0.1:6379:6379 redis:7-alpine
+
+### Start Existing Redis Container
+
+    docker start node07-redis
+
+### Check Redis Connection
+
+    docker exec node07-redis redis-cli PING
 
 Expected output:
 
-```text
-PONG
-```
+    PONG
 
-If the Redis container already exists but is stopped, **do not run `docker run` again**. Start the existing container instead:
+### Stop Redis Container
 
-```powershell
-docker start rate-limit-redis
-```
+    docker stop node07-redis
 
-Then verify with `docker exec rate-limit-redis redis-cli ping`.
+## 6. Run the Application
 
-## 6. Start the API
+Development mode:
 
-From the project root, after creating the source files described in the practice document:
+    npm run dev
 
-```powershell
-npm run dev
-```
+Normal mode:
+
+    npm start
 
 Expected output:
 
-```text
-Server running on port 3000
-```
+    API running at http://localhost:3000
 
-Alternatively, start without Nodemon:
+## 7. API Endpoints
 
-```powershell
-npm start
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | /api/products/:id | Get product using Redis and ETag |
+| PATCH | /api/products/:id | Update product and invalidate Redis |
+| GET | /api/catalog | Public catalog with HTTP SWR |
+| GET | /api/metrics | View cache statistics |
 
-API base URL: `http://localhost:3000`.
+## 8. Redis Caching Workflow
 
-## 7. Test API rate limits manually
+### First GET Request — Cache MISS
 
-Open a **second Windows PowerShell terminal** while Redis and the API are running. These commands use `curl.exe` (not the PowerShell `curl` alias).
+    GET /api/products/1
 
-### 7.1 Public API — limit: 5 requests per 60 seconds per IP
+1. Check Redis for the product.
+2. If the key does not exist, load data from the source.
+3. Store the result in Redis with a TTL.
+4. Return product data.
 
-Send six requests:
+Expected header:
 
-```powershell
-1..6 | ForEach-Object {
-  curl.exe -s -o NUL -w '%{http_code}\n' http://localhost:3000/api/public
-}
-```
+    X-Cache: MISS
 
-Expected status codes within a fresh 60-second window:
+### Second GET Request — Cache HIT
 
-```text
-200
-200
-200
-200
-200
-429
-```
+    GET /api/products/1
 
-View the response headers, including `Retry-After`, after the quota has been reached:
+1. Check Redis for the product.
+2. Read the existing cached data.
+3. Return the cached product.
 
-```powershell
-curl.exe -i http://localhost:3000/api/public
-```
+Expected header:
 
-**Note:** The limiter uses a *rolling* 60-second window. If you have already made requests, the first result may be `429`; wait for the oldest counted request to expire before repeating a fresh-window test.
+    X-Cache: HIT
 
-### 7.2 Profile API — limit: 10 requests per 60 seconds per authenticated user
+### Redis Key Example
 
-Send 11 requests for the first demo user:
+    node07:products:v1:1
 
-```powershell
-1..11 | ForEach-Object {
-  curl.exe -s -o NUL -w '%{http_code}\n' -H 'Authorization: Bearer demo-user-token' http://localhost:3000/api/profile
-}
-```
+### Cache Expiration
 
-Expected: first 10 return `200`; the 11th returns `429` in a fresh window.
+Redis entries expire automatically based on their TTL.
 
-Check that the second demo user has an **independent** quota:
+Example:
 
-```powershell
-curl.exe -i -H 'Authorization: Bearer second-user-token' http://localhost:3000/api/profile
-```
+    await redis.set(key, JSON.stringify(data), {
+      EX: 60
+    });
 
-Expected: `200` for this user's first request.
+The cached entry expires after 60 seconds.
 
-### 7.3 Partner API — limit: 8 requests per 60 seconds per validated API token
+## 9. ETag and Conditional Requests
 
-Send nine requests using the first practice token:
+### First Request
 
-```powershell
-1..9 | ForEach-Object {
-  curl.exe -s -o NUL -w '%{http_code}\n' -H 'X-API-Key: partner-token-123' http://localhost:3000/api/partner
-}
-```
+    GET /api/products/1
 
-Expected: first 8 return `200`; the ninth returns `429` in a fresh window.
+Example response:
 
-Check the second token's independent quota:
+    HTTP/1.1 200 OK
+    ETag: "<generated-hash>"
+    Cache-Control: private, no-cache
 
-```powershell
-curl.exe -i -H 'X-API-Key: partner-token-456' http://localhost:3000/api/partner
-```
+The response includes the product JSON.
 
-Expected: `200` for this token's first request.
+### Second Request with If-None-Match
 
-The demo bearer tokens and API keys are **practice fixtures only**, not production credentials.
+Copy the ETag from the first response.
 
-### 7.4 Health check — not rate-limited
+Add the following request header in Postman:
 
-```powershell
-curl.exe -i http://localhost:3000/healthz
-```
+    If-None-Match: "<copied-etag>"
 
-Expected: `200 OK` while the application is healthy. This endpoint is exempt from rate limiting.
+If the ETag matches the current response:
 
-## 8. Run automated tests
+    HTTP/1.1 304 Not Modified
 
-Keep **Redis running**. The tests use Jest, Supertest, and Redis database `15` by default.
+Response body:
 
-Run tests:
+    Empty
 
-```powershell
-npm test
-```
+If the ETag differs:
 
-Run tests with coverage:
+    HTTP/1.1 200 OK
 
-```powershell
-npm run test:coverage
-```
+The server returns the current JSON with its ETag.
 
-The attached project document tests:
+### Important Notes
 
-- Requests allowed within the limit and blocked beyond it
-- Sliding-window expiry and independent keys
-- Atomic behavior under concurrent requests
-- HTTP `429` and `Retry-After`
-- Unrestricted `/healthz`
-- Sharing a rate limit across Express instances
-- HTTP `503` when Redis checking fails (fail-closed behavior)
+- The server generates the ETag from current JSON data.
+- The ETag is not separately stored in Redis in this project.
+- If product data changes, the generated ETag changes.
+- If-None-Match is sent by the client.
+- Without If-None-Match, the API returns 200 with JSON.
+- Redis HIT and HTTP 304 are different concepts.
 
-**Do not run the integration tests against production Redis.**
+## 10. Cache Invalidation
 
-## 9. Verify two Node.js instances share the same Redis limit
+Update product:
 
-Keep Redis running. Start two **separate Windows PowerShell terminals**, each in the project directory and using the same `REDIS_URL`.
+    PATCH /api/products/1
 
-**Terminal 1:**
+Request body:
 
-```powershell
-$env:PORT=3000
-npm start
-```
+    {
+      "price": 62000
+    }
 
-**Terminal 2:**
+Backend workflow:
 
-```powershell
-$env:PORT=3001
-npm start
-```
+    Update product
+          |
+          v
+    Delete affected Redis key
+          |
+          v
+    Next GET causes cache MISS
+          |
+          v
+    Load updated product
+          |
+          v
+    Save fresh data in Redis
 
-In a **third PowerShell terminal**, send six requests alternating between the ports:
+Cache invalidation command:
 
-```powershell
-3000,3001,3000,3001,3000,3001 | ForEach-Object {
-  curl.exe -s -o NUL -w '%{http_code}\n' "http://localhost:$_/api/public"
-}
-```
+    await redis.del(cacheKey);
 
-Expected, when starting with a fresh 60-second window from the same client IP:
+Important:
 
-```text
-200
-200
-200
-200
-200
-429
-```
+Redis does not automatically detect product updates.
 
-Both API processes must connect to the **same Redis server**, with the **same limit policy and key construction**. This exercise tests multiple Express instances, not a full Redis Cluster deployment.
+Your Node.js backend explicitly invalidates affected
+cache entries after successful data changes.
 
-## 10. Endpoints and policies
+## 11. Cache-Control Policies
 
-| Endpoint | Key strategy | Limit | Behavior |
-| --- | --- | --- | --- |
-| `GET /api/public` | Client IP | 5 requests / 60 sec | `429` when exceeded |
-| `GET /api/profile` | Verified user ID | 10 requests / 60 sec | Requires demo bearer token |
-| `GET /api/partner` | Hash of validated API token | 8 requests / 60 sec | Requires demo `X-API-Key` |
-| `GET /healthz` | None | Unlimited | Health check exemption |
+### Product API
 
-A blocked request returns HTTP `429 Too Many Requests` and a dynamically computed `Retry-After` header. The documented Redis failure policy returns `503 Service Unavailable` if the limiter cannot check Redis.
+    Cache-Control: private, no-cache
 
-## 11. Important correction found while reviewing the attached document
+The response may be privately stored, but it must
+be revalidated before reuse.
 
-In the document's `src/middleware/rateLimiter.js` example, the key is shown as:
+### Catalog API
 
-```js
-`rate-limit:policyName:{key}`
-```
+    Cache-Control: public, max-age=10, stale-while-revalidate=30
 
-That is a **constant string**, so different users, tokens, and policies would accidentally share the **same Redis rate-limit key**.
+A supporting HTTP cache may:
 
-Use a JavaScript template literal with interpolation instead:
+- Use the response while it is fresh for 10 seconds.
+- Temporarily reuse stale data while revalidating
+  during the following 30 seconds.
 
-```js
-`rate-limit:${policyName}:${key}`
-```
+This does not automatically implement background
+refreshing inside Redis.
 
-This change is essential for the independent-user, independent-token, and per-policy behavior described in the project. Apply it in `checkRateLimit(...)` before testing. Do not use client-supplied identity strings as trusted rate-limit keys without authentication or validation.
+### Mutation Responses
 
-## 12. Quick command reference
+    Cache-Control: no-store
 
-| Task | Command |
-| --- | --- |
-| Initialize project | `npm init -y` |
-| Install dependencies | `npm install express redis dotenv express-rate-limit` |
-| Install dev dependencies | `npm install --save-dev jest supertest nodemon` |
-| Create Redis container | `docker run -d --name rate-limit-redis -p 6379:6379 redis:7-alpine` |
-| Start existing Redis container | `docker start rate-limit-redis` |
-| Check Redis connection | `docker exec rate-limit-redis redis-cli ping` |
-| Start development server | `npm run dev` |
-| Start normal server | `npm start` |
-| Run tests | `npm test` |
-| Run coverage | `npm run test:coverage` |
+The response should not be stored by HTTP caches.
+
+## 12. Redis Commands for Testing
+
+### Get Cached Product
+
+    docker exec node07-redis redis-cli GET node07:products:v1:1
+
+### Check TTL
+
+    docker exec node07-redis redis-cli TTL node07:products:v1:1
+
+TTL values:
+
+- Positive number: Remaining seconds
+- -1: Key exists without expiration
+- -2: Key does not exist
+
+### Check Whether Key Exists
+
+    docker exec node07-redis redis-cli EXISTS node07:products:v1:1
+
+### Delete Cache Entry
+
+    docker exec node07-redis redis-cli DEL node07:products:v1:1
+
+### Set Cache Expiration to One Second
+
+    docker exec node07-redis redis-cli EXPIRE node07:products:v1:1 1
+
+## 13. Cache Metrics
+
+Endpoint:
+
+    GET /api/metrics
+
+Example response:
+
+    {
+      "hits": 8,
+      "misses": 4,
+      "bypasses": 0,
+      "errors": 0,
+      "hitRatePercent": 66.7,
+      "pendingInvalidations": 0
+    }
+
+Metrics:
+
+- HIT: Data found in Redis
+- MISS: Data not found in Redis
+- BYPASS: Data source used without Redis
+- ERROR: Redis operation failed
+
+Cache hit rate:
+
+    (hits / (hits + misses)) * 100
+
+## 14. Redis Failure Handling
+
+If Redis becomes unavailable while the API is running:
+
+1. Detect the Redis read error.
+2. Load data from the underlying source.
+3. Return the product using fallback behavior.
+4. Record a cache bypass or error.
+
+Expected header when fallback succeeds:
+
+    X-Cache: BYPASS
+
+Note:
+
+The application initially connects to Redis during
+startup. The runtime fallback does not mean the
+application can necessarily start without Redis.
+
+## 15. Manual Testing Checklist
+
+| Test | Expected Result |
+|------|-----------------|
+| First GET | 200 + Cache MISS |
+| Second GET | 200 + Cache HIT |
+| Matching ETag | 304, empty body |
+| Incorrect ETag | 200 + JSON |
+| Missing If-None-Match | 200 + JSON |
+| Product PATCH | Updated data |
+| GET after PATCH | Cache MISS + new ETag |
+| TTL expiration | Cache MISS |
+| Redis failure | Fallback where safe |
+| Catalog GET | SWR Cache-Control header |
+| Metrics GET | Cache statistics |
+| Invalid product | 404 |
+
+## 16. Automated Testing
+
+### Run Unit Tests
+
+    npm run test:unit
+
+### Run Integration Tests
+
+    npm run test:integration
+
+Redis must be running for integration tests.
+
+### Run All Tests
+
+    npm test
+
+Main testing scenarios:
+
+- ETag generation and matching
+- Cache MISS and HIT
+- HTTP 304 responses
+- Incorrect ETag handling
+- Redis TTL expiration
+- Cache invalidation after PATCH
+- Redis read failure fallback
+- Invalid product requests
+- Cache-Control headers
+- Cache statistics
+
+## 17. Important Mistakes to Avoid
+
+1. Do not cache every API response unnecessarily.
+2. Always define an appropriate Redis TTL.
+3. Use consistent and unique cache keys.
+4. Include relevant request parameters in cache keys.
+5. Invalidate affected caches after successful updates.
+6. Do not assume Redis detects database changes.
+7. Do not confuse Redis HIT with HTTP 304.
+8. Do not send a response body with HTTP 304.
+9. Generate consistent ETags from response data.
+10. Do not expose private data through shared HTTP caches.
+11. Do not confuse Redis TTL with HTTP max-age.
+12. Do not assume HTTP SWR refreshes Redis automatically.
+13. Handle Redis connection and command errors.
+14. Test both success and failure scenarios.
+15. Reset Redis keys and sample data between tests.
+16. Be aware of stale-data races during concurrent requests.
+17. Do not expose Redis directly to the public internet.
+18. Do not assume cache metrics alone prove a performance gain.
+
+## 18. Important Revision Notes
+
+GET — Cache HIT:
+
+    GET → Redis HIT → Return cached data
+
+GET — Cache MISS:
+
+    GET → Redis MISS → Data Source
+        → Save in Redis → Return data
+
+PATCH — Cache Invalidation:
+
+    PATCH → Update data source
+          → Delete Redis key
+          → Next GET loads fresh data
+
+ETag Validation:
+
+    GET without If-None-Match → 200 + JSON
+
+    GET with matching ETag → 304 + Empty body
+
+    GET with different ETag → 200 + Current JSON
+
+## 19. Project Limitations
+
+- Uses in-memory sample product data.
+- Does not include a persistent database.
+- Redis invalidation retry tracking is process-local.
+- Concurrent cache operations may require stronger consistency.
+- HTTP SWR is configured through response headers.
+- Metrics are kept in application memory.
+
+## 20. Learning Outcome
+
+After completing this project, you should understand:
+
+- How Redis caching works
+- How to implement cache-aside
+- How cache HIT and MISS differ
+- How to configure Redis TTL
+- How ETags are generated
+- How If-None-Match works
+- Why HTTP 304 is useful
+- How cache invalidation works
+- How to handle Redis failures
+- How to monitor cache performance
+- How to test caching behavior
+
+## References
+
+- https://redis.io/docs/latest/
+- https://www.rfc-editor.org/rfc/rfc9110.html
+- https://www.rfc-editor.org/rfc/rfc9111.html
+- https://www.rfc-editor.org/rfc/rfc5861.html
+- https://nodejs.org/api/test.html
 
 ---
 
-**Project scope:** Redis-backed exact sliding-window rate limiting using Node.js and Express, with practice-only authentication, isolated tests, basic structured logging, and a multi-instance consistency check. The attached document does **not** require a frontend, production authentication service, queue-based throttling, or a monitoring dashboard.
+**Golden Rule:**
+
+Redis automatically expires cached data using TTL,
+but your backend must invalidate affected cache
+entries after successful data changes.
